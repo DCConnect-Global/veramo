@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "build": "cross-env NODE_OPTIONS=\"--experimental-vm-modules --experimental-json-modules\" pnpm build:js && pnpm build:api && pnpm build:schema",
+    "prepare": "pnpm build",
     "build:js": "pnpm -r --stream build",
     "build:api": "pnpm -r --stream extract-api",
     "build:schema": "pnpm -r --stream generate-plugin-schema",
