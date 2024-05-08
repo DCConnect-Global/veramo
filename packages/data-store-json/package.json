@@ -10,7 +10,6 @@
     "extract-api": "node ../cli/bin/veramo.js dev extract-api"
   },
   "dependencies": {
-    "@metamask/snaps-sdk": "^4.0.1",
     "@ungap/structured-clone": "^1.2.0",
     "@veramo/core-types": "workspace:^",
     "@veramo/did-manager": "workspace:^",

@@ -6,7 +6,6 @@
   "exports": "./build/index.js",
   "types": "build/index.d.ts",
   "scripts": {
-    "prepare": "pnpm lerna run build --scope=@veramo/did-manager",
     "build": "tsc",
     "extract-api": "node ../cli/bin/veramo.js dev extract-api"
   },

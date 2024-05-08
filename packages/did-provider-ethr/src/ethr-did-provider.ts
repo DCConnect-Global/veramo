@@ -5,7 +5,6 @@ import {
   IKey,
   IKeyManager,
   IService,
-  ManagedKeyInfo,
   RemoveTxnParams,
 } from '@veramo/core-types'
 import { AbstractIdentifierProvider } from '@veramo/did-manager'
