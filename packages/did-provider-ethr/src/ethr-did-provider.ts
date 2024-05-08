@@ -274,7 +274,6 @@ export class EthrDIDProvider extends AbstractIdentifierProvider {
     const networkStringMatcher = /^did:ethr(:.+)?:(0x[0-9a-fA-F]{40}|0x[0-9a-fA-F]{66}).*$/
     const matches = identifier.did.match(networkStringMatcher)
     const network = this.getNetworkFor(matches?.[1]?.substring(1))
-    console.log('network', network)
     const metaControllerKey = await context.agent.keyManagerGet({ kid: metaIdentifierKeyId })
     if (!network || !metaControllerKey) throw new Error(`invalid_argument: controller key or network error`)
     return new EthrDID({
