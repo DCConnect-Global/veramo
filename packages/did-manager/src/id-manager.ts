@@ -20,6 +20,9 @@ import {
   MinimalImportableIdentifier,
   IKey,
   IService,
+  IDIDManagerSubmitTransactionArgs,
+  AddTxnParams,
+  RemoveTxnParams,
 } from '@veramo/core-types'
 import { schema } from '@veramo/core-types'
 import { AbstractDIDStore } from './abstract-identifier-store.js'
@@ -60,6 +63,7 @@ export class DIDManager implements IAgentPlugin {
       didManagerImport: this.didManagerImport.bind(this),
       didManagerDelete: this.didManagerDelete.bind(this),
       didManagerAddKey: this.didManagerAddKey.bind(this),
+      didManagerSubmitTxn: this.didManagerSubmitTxn.bind(this),
       didManagerRemoveKey: this.didManagerRemoveKey.bind(this),
       didManagerAddService: this.didManagerAddService.bind(this),
       didManagerRemoveService: this.didManagerRemoveService.bind(this),
@@ -216,11 +220,23 @@ export class DIDManager implements IAgentPlugin {
     return this.store.deleteDID({ did })
   }
 
+  /** {@inheritDoc @veramo/core-types#IDIDManager.didManagerSubmitTxn} */
+  async didManagerSubmitTxn(
+    { txnParams, provider, agentDid, principalDid }: IDIDManagerSubmitTransactionArgs,
+    context: IAgentContext<IKeyManager>,
+  ): Promise<string> {
+    const identifier = await this.store.getDID({ did: agentDid })
+    return this.getProvider(provider).submitTransaction(
+      { identifier, txnParams, provider, principalDid },
+      context,
+    )
+  }
+
   /** {@inheritDoc @veramo/core-types#IDIDManager.didManagerAddKey} */
   async didManagerAddKey(
     { did, key, options }: IDIDManagerAddKeyArgs,
     context: IAgentContext<IKeyManager>,
-  ): Promise<any> {
+  ): Promise<typeof options extends { signOnly: true } ? AddTxnParams : string> {
     const identifier = await this.store.getDID({ did })
     const provider = this.getProvider(identifier.provider)
     const result = await provider.addKey({ identifier, key, options }, context)
@@ -233,7 +249,7 @@ export class DIDManager implements IAgentPlugin {
   async didManagerRemoveKey(
     { did, kid, options }: IDIDManagerRemoveKeyArgs,
     context: IAgentContext<IKeyManager>,
-  ): Promise<any> {
+  ): Promise<typeof options extends { signOnly: true } ? RemoveTxnParams : string> {
     const identifier = await this.store.getDID({ did })
     const provider = this.getProvider(identifier.provider)
     const result = await provider.removeKey({ identifier, kid, options }, context)
@@ -246,7 +262,7 @@ export class DIDManager implements IAgentPlugin {
   async didManagerAddService(
     { did, service, options }: IDIDManagerAddServiceArgs,
     context: IAgentContext<IKeyManager>,
-  ): Promise<any> {
+  ): Promise<typeof options extends { signOnly: true } ? AddTxnParams : string> {
     const identifier = await this.store.getDID({ did })
     const provider = this.getProvider(identifier.provider)
     const result = await provider.addService({ identifier, service, options }, context)
@@ -259,7 +275,7 @@ export class DIDManager implements IAgentPlugin {
   async didManagerRemoveService(
     { did, id, options }: IDIDManagerRemoveServiceArgs,
     context: IAgentContext<IKeyManager>,
-  ): Promise<any> {
+  ): Promise<typeof options extends { signOnly: true } ? RemoveTxnParams : string> {
     const identifier = await this.store.getDID({ did })
     const provider = this.getProvider(identifier.provider)
     const result = await provider.removeService({ identifier, id, options }, context)

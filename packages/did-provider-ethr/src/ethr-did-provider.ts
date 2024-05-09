@@ -1,4 +1,12 @@
-import { IAgentContext, IIdentifier, IKey, IKeyManager, IService } from '@veramo/core-types'
+import {
+  AddTxnParams,
+  IAgentContext,
+  IIdentifier,
+  IKey,
+  IKeyManager,
+  IService,
+  RemoveTxnParams,
+} from '@veramo/core-types'
 import { AbstractIdentifierProvider } from '@veramo/did-manager'
 import { Provider, SigningKey, computeAddress, JsonRpcProvider, TransactionRequest, Signature } from 'ethers'
 import { KmsEthereumSigner } from './kms-eth-signer.js'
@@ -46,6 +54,9 @@ export interface TransactionOptions extends TransactionRequest {
   ttl?: number
   encoding?: string
   metaIdentifierKeyId?: string
+  signOnly?: boolean
+  key?: Pick<IKey, 'type' | 'publicKeyHex'>
+  service?: Pick<IService, 'type' | 'serviceEndpoint'>
 }
 
 /**
@@ -182,17 +193,17 @@ export class EthrDIDProvider extends AbstractIdentifierProvider {
     { kms, options }: { kms?: string; options?: CreateDidEthrOptions },
     context: IRequiredContext,
   ): Promise<Omit<IIdentifier, 'provider'>> {
-    const key = await context.agent.keyManagerCreate({kms: kms || this.defaultKms, type: 'Secp256k1'})
+    const key = await context.agent.keyManagerCreate({ kms: kms || this.defaultKms, type: 'Secp256k1' })
     const compressedPublicKey = SigningKey.computePublicKey(`0x${key.publicKeyHex}`, true)
 
     let networkSpecifier
-    if(options?.network) {
-      if(typeof options.network === 'number') {
+    if (options?.network) {
+      if (typeof options.network === 'number') {
         networkSpecifier = BigInt(options?.network)
       } else {
         networkSpecifier = options?.network
       }
-    } else if(options?.providerName?.match(/^did:ethr:.+$/)) {
+    } else if (options?.providerName?.match(/^did:ethr:.+$/)) {
       networkSpecifier = options?.providerName?.substring(9)
     } else {
       networkSpecifier = undefined
@@ -206,9 +217,7 @@ export class EthrDIDProvider extends AbstractIdentifierProvider {
     }
     if (typeof networkSpecifier === 'bigint' || typeof networkSpecifier === 'number') {
       networkSpecifier =
-        network.name && network.name.length > 0
-          ? network.name
-          : BigInt(options?.network || 1).toString(16)
+        network.name && network.name.length > 0 ? network.name : BigInt(options?.network || 1).toString(16)
     }
     const networkString = networkSpecifier && networkSpecifier !== 'mainnet' ? `${networkSpecifier}:` : ''
     const identifier: Omit<IIdentifier, 'provider'> = {
@@ -236,24 +245,45 @@ export class EthrDIDProvider extends AbstractIdentifierProvider {
     return true
   }
 
-  private getNetworkFor(networkSpecifier: string | number | bigint | undefined): EthrNetworkConfiguration | undefined {
+  private getNetworkFor(
+    networkSpecifier: string | number | bigint | undefined,
+  ): EthrNetworkConfiguration | undefined {
     let networkNameOrId: string | number | bigint = networkSpecifier || 'mainnet'
-    let network = this.networks.find(
-      (n) => {
-        if(n.chainId) {
-          if(typeof networkSpecifier === 'bigint') {
-            if(BigInt(n.chainId) === networkNameOrId) return n
-          } else {
-            if(n.chainId === networkNameOrId) return n
-          }
+    let network = this.networks.find((n) => {
+      if (n.chainId) {
+        if (typeof networkSpecifier === 'bigint') {
+          if (BigInt(n.chainId) === networkNameOrId) return n
+        } else {
+          if (n.chainId === networkNameOrId) return n
         }
-        if(n.name === networkNameOrId || n.description === networkNameOrId) return n
-      },
-    )
+      }
+      if (n.name === networkNameOrId || n.description === networkNameOrId) return n
+    })
     if (!network && !networkSpecifier && this.networks.length === 1) {
       network = this.networks[0]
     }
     return network
+  }
+
+  private async getEthrDidProxyController(
+    identifier: IIdentifier,
+    context: IRequiredContext,
+    metaIdentifierKeyId: string,
+    principalDid: string,
+  ): Promise<EthrDID> {
+    const networkStringMatcher = /^did:ethr(:.+)?:(0x[0-9a-fA-F]{40}|0x[0-9a-fA-F]{66}).*$/
+    const matches = identifier.did.match(networkStringMatcher)
+    const network = this.getNetworkFor(matches?.[1]?.substring(1))
+    const metaControllerKey = await context.agent.keyManagerGet({ kid: metaIdentifierKeyId })
+    if (!network || !metaControllerKey) throw new Error(`invalid_argument: controller key or network error`)
+    return new EthrDID({
+      identifier: principalDid,
+      provider: network.provider,
+      chainNameOrId: network.name || network.chainId,
+      rpcUrl: network.rpcUrl,
+      registry: network.registry,
+      txSigner: new KmsEthereumSigner(metaControllerKey, context, network?.provider),
+    })
   }
 
   private async getEthrDidController(
@@ -278,7 +308,7 @@ export class EthrDIDProvider extends AbstractIdentifierProvider {
       throw new Error(`invalid_argument: cannot find network for ${identifier.did}`)
     }
 
-    if(!network.provider) {
+    if (!network.provider) {
       throw new Error(`Provider was not found for network ${identifier.did}`)
     }
 
@@ -320,10 +350,47 @@ export class EthrDIDProvider extends AbstractIdentifierProvider {
     }
   }
 
+  /**
+   * @remarks This method submits transactions signed in Add/Remove Key/Service methods that
+   * have been prepared with the signOnly option flag.
+   **/
+  async submitTransaction(
+    {
+      txnParams,
+      identifier,
+      principalDid,
+    }: { identifier: IIdentifier; txnParams: AddTxnParams | RemoveTxnParams; principalDid?: string },
+    context: IRequiredContext,
+  ): Promise<string> {
+    const metaIdentifierKeyId = identifier.keys.find((k) =>
+      k.meta?.algorithms?.includes('eth_signTransaction'),
+    )?.kid
+    if (!principalDid) {
+      throw new Error('invalid_argument: principalDid is required')
+    }
+    if (!metaIdentifierKeyId) {
+      throw new Error('invalid_argument: metaIdentifierKeyId is not managed by this agent')
+    }
+    const metaEthrDid = await this.getEthrDidProxyController(
+      identifier,
+      context,
+      metaIdentifierKeyId,
+      principalDid,
+    )
+
+    /**
+     * NOTE: setAttributeSigned and revokeAttributeSigned take a different number of arguments
+     * depending on whether it is an add or remove operation. A length check differentiates
+     * the type union of the txnParams tuples passed as arguments
+     **/
+    if (txnParams.length === 5) return await metaEthrDid.setAttributeSigned(...txnParams)
+    else return await metaEthrDid.revokeAttributeSigned(...txnParams)
+  }
+
   async addKey(
     { identifier, key, options }: { identifier: IIdentifier; key: IKey; options?: TransactionOptions },
     context: IRequiredContext,
-  ): Promise<any> {
+  ): Promise<string | AddTxnParams> {
     const ethrDid = await this.getEthrDidController(identifier, context)
     const usg = key.type === 'X25519' ? 'enc' : 'veriKey'
     const encoding = key.type === 'X25519' ? 'base58' : options?.encoding || 'hex'
@@ -331,23 +398,34 @@ export class EthrDIDProvider extends AbstractIdentifierProvider {
     const attrValue = '0x' + key.publicKeyHex
     const ttl = options?.ttl || this.ttl || 86400
     const gasLimit = options?.gasLimit || this.gas || DEFAULT_GAS_LIMIT
-    if (options?.metaIdentifierKeyId) {
+    if (options?.signOnly) {
       const metaHash = await ethrDid.createSetAttributeHash(attrName, attrValue, ttl)
       const canonicalSignature = await EthrDIDProvider.createMetaSignature(context, identifier, metaHash)
-
-      const metaEthrDid = await this.getEthrDidController(identifier, context, options.metaIdentifierKeyId!)
       debug('ethrDid.addKeySigned %o', { attrName, attrValue, ttl, gasLimit })
       delete options.metaIdentifierKeyId
-      const txHash = await metaEthrDid.setAttributeSigned(
+      const txnParams: AddTxnParams = [
         attrName,
         attrValue,
         ttl,
         { sigV: canonicalSignature.v, sigR: canonicalSignature.r, sigS: canonicalSignature.s },
-        {
-          ...options,
-          gasLimit,
-        },
-      )
+        { ...options, gasLimit },
+      ]
+      debug('ethrDid.addKeySigned: returning TransactionParams')
+      return txnParams
+    } else if (options?.metaIdentifierKeyId) {
+      const metaHash = await ethrDid.createSetAttributeHash(attrName, attrValue, ttl)
+      const canonicalSignature = await EthrDIDProvider.createMetaSignature(context, identifier, metaHash)
+      const metaEthrDid = await this.getEthrDidController(identifier, context, options.metaIdentifierKeyId!)
+      debug('ethrDid.addKeySigned %o', { attrName, attrValue, ttl, gasLimit })
+      delete options.metaIdentifierKeyId
+      const txnParams: AddTxnParams = [
+        attrName,
+        attrValue,
+        ttl,
+        { sigV: canonicalSignature.v, sigR: canonicalSignature.r, sigS: canonicalSignature.s },
+        { ...options, gasLimit },
+      ]
+      const txHash = await metaEthrDid.setAttributeSigned(...txnParams)
       debug(`ethrDid.addKeySigned tx = ${txHash}`)
       return txHash
     } else {
@@ -368,7 +446,7 @@ export class EthrDIDProvider extends AbstractIdentifierProvider {
       options,
     }: { identifier: IIdentifier; service: IService; options?: TransactionOptions },
     context: IRequiredContext,
-  ): Promise<any> {
+  ): Promise<string | AddTxnParams> {
     const ethrDid = await this.getEthrDidController(identifier, context)
 
     const attrName = 'did/svc/' + service.type
@@ -381,23 +459,35 @@ export class EthrDIDProvider extends AbstractIdentifierProvider {
 
     debug('ethrDid.setAttribute %o', { attrName, attrValue, ttl, gasLimit })
 
-    if (options?.metaIdentifierKeyId) {
+    if (options?.signOnly) {
+      const metaHash = await ethrDid.createSetAttributeHash(attrName, attrValue, ttl)
+      const canonicalSignature = await EthrDIDProvider.createMetaSignature(context, identifier, metaHash)
+      debug('ethrDid.addServiceSigned %o', { attrName, attrValue, ttl, gasLimit })
+      delete options.metaIdentifierKeyId
+      const txnParams: AddTxnParams = [
+        attrName,
+        attrValue,
+        ttl,
+        { sigV: canonicalSignature.v, sigR: canonicalSignature.r, sigS: canonicalSignature.s },
+        { ...options, gasLimit },
+      ]
+      debug('ethrDid.addServiceSigned: signing only. Returning TransactionParams')
+      return txnParams
+    } else if (options?.metaIdentifierKeyId) {
       const metaHash = await ethrDid.createSetAttributeHash(attrName, attrValue, ttl)
       const canonicalSignature = await EthrDIDProvider.createMetaSignature(context, identifier, metaHash)
 
       const metaEthrDid = await this.getEthrDidController(identifier, context, options.metaIdentifierKeyId!)
       debug('ethrDid.addServiceSigned %o', { attrName, attrValue, ttl, gasLimit })
       delete options.metaIdentifierKeyId
-      const txHash = await metaEthrDid.setAttributeSigned(
+      const txnParams: AddTxnParams = [
         attrName,
         attrValue,
         ttl,
         { sigV: canonicalSignature.v, sigR: canonicalSignature.r, sigS: canonicalSignature.s },
-        {
-          ...options,
-          gasLimit,
-        },
-      )
+        { ...options, gasLimit },
+      ]
+      const txHash = await metaEthrDid.setAttributeSigned(...txnParams)
       debug(`ethrDid.addServiceSigned tx = ${txHash}`)
       return txHash
     } else {
@@ -413,10 +503,10 @@ export class EthrDIDProvider extends AbstractIdentifierProvider {
   async removeKey(
     args: { identifier: IIdentifier; kid: string; options?: TransactionOptions },
     context: IRequiredContext,
-  ): Promise<any> {
+  ): Promise<string | RemoveTxnParams> {
     const ethrDid = await this.getEthrDidController(args.identifier, context)
 
-    const key = args.identifier.keys.find((k) => k.kid === args.kid)
+    const key = args.options?.key || args.identifier.keys.find((k) => k.kid === args.kid)
     if (!key) throw Error('Key not found')
 
     const usg = key.type === 'X25519' ? 'enc' : 'veriKey'
@@ -425,7 +515,19 @@ export class EthrDIDProvider extends AbstractIdentifierProvider {
     const attrValue = '0x' + key.publicKeyHex
     const gasLimit = args.options?.gasLimit || this.gas || DEFAULT_GAS_LIMIT
 
-    if (args.options?.metaIdentifierKeyId) {
+    if (args.options?.signOnly) {
+      const metaHash = await ethrDid.createRevokeAttributeHash(attrName, attrValue)
+      const canonicalSignature = await EthrDIDProvider.createMetaSignature(context, args.identifier, metaHash)
+      debug('ethrDid.revokeAttributeSigned %o', { attrName, attrValue, gasLimit })
+      const txnParams: RemoveTxnParams = [
+        attrName,
+        attrValue,
+        { sigV: canonicalSignature.v, sigR: canonicalSignature.r, sigS: canonicalSignature.s },
+        { ...args.options, gasLimit },
+      ]
+      debug('ethrDid.revokeAttributeSigned: signing only. Returning TransactionParams')
+      return txnParams
+    } else if (args.options?.metaIdentifierKeyId) {
       const metaHash = await ethrDid.createRevokeAttributeHash(attrName, attrValue)
       const canonicalSignature = await EthrDIDProvider.createMetaSignature(context, args.identifier, metaHash)
 
@@ -435,16 +537,14 @@ export class EthrDIDProvider extends AbstractIdentifierProvider {
         args.options.metaIdentifierKeyId!,
       )
       debug('ethrDid.revokeAttributeSigned %o', { attrName, attrValue, gasLimit })
-      delete args.options.metaIdentifierKeyId
-      const txHash = await metaEthrDid.revokeAttributeSigned(
+      const txnParams: RemoveTxnParams = [
         attrName,
         attrValue,
         { sigV: canonicalSignature.v, sigR: canonicalSignature.r, sigS: canonicalSignature.s },
-        {
-          ...args.options,
-          gasLimit,
-        },
-      )
+        { ...args.options, gasLimit },
+      ]
+      delete args.options.metaIdentifierKeyId
+      const txHash = await metaEthrDid.revokeAttributeSigned(...txnParams)
       debug(`ethrDid.removeKeySigned tx = ${txHash}`)
       return txHash
     } else {
@@ -461,10 +561,10 @@ export class EthrDIDProvider extends AbstractIdentifierProvider {
   async removeService(
     args: { identifier: IIdentifier; id: string; options?: TransactionOptions },
     context: IRequiredContext,
-  ): Promise<any> {
+  ): Promise<string | RemoveTxnParams> {
     const ethrDid = await this.getEthrDidController(args.identifier, context)
 
-    const service = args.identifier.services.find((s) => s.id === args.id)
+    const service = args.options?.service || args.identifier.services.find((s) => s.id === args.id)
     if (!service) throw Error('Service not found')
 
     const attrName = 'did/svc/' + service.type
@@ -474,7 +574,19 @@ export class EthrDIDProvider extends AbstractIdentifierProvider {
         : JSON.stringify(service.serviceEndpoint)
     const gasLimit = args.options?.gasLimit || this.gas || DEFAULT_GAS_LIMIT
 
-    if (args.options?.metaIdentifierKeyId) {
+    if (args.options?.signOnly) {
+      const metaHash = await ethrDid.createRevokeAttributeHash(attrName, attrValue)
+      const canonicalSignature = await EthrDIDProvider.createMetaSignature(context, args.identifier, metaHash)
+      debug('ethrDid.revokeAttributeSigned %o', { attrName, attrValue, gasLimit })
+      const txnParams: RemoveTxnParams = [
+        attrName,
+        attrValue,
+        { sigV: canonicalSignature.v, sigR: canonicalSignature.r, sigS: canonicalSignature.s },
+        { ...args.options, gasLimit },
+      ]
+      debug('ethrDid.revokeAttributeSigned: signing only. Returning TransactionParams')
+      return txnParams
+    } else if (args.options?.metaIdentifierKeyId) {
       const metaHash = await ethrDid.createRevokeAttributeHash(attrName, attrValue)
       const canonicalSignature = await EthrDIDProvider.createMetaSignature(context, args.identifier, metaHash)
 
@@ -485,15 +597,13 @@ export class EthrDIDProvider extends AbstractIdentifierProvider {
       )
       debug('ethrDid.revokeAttributeSigned %o', { attrName, attrValue, gasLimit })
       delete args.options.metaIdentifierKeyId
-      const txHash = await metaEthrDid.revokeAttributeSigned(
+      const txnParams: RemoveTxnParams = [
         attrName,
         attrValue,
         { sigV: canonicalSignature.v, sigR: canonicalSignature.r, sigS: canonicalSignature.s },
-        {
-          ...args.options,
-          gasLimit,
-        },
-      )
+        { ...args.options, gasLimit },
+      ]
+      const txHash = await metaEthrDid.revokeAttributeSigned(...txnParams)
       debug(`ethrDid.removeServiceSigned tx = ${txHash}`)
       return txHash
     } else {
