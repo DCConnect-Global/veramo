@@ -15,11 +15,11 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Implementation of {@link VeramoJsonStore} that uses browser localStorage to store data.
+ * Implementation of {@link VeramoJsonStore} that uses the snap managed state to store data.
  *
  * @example
  * ```
- * const dataStore = BrowserLocalStorageStore.fromLocalStorage('veramo-state')
+ * const dataStore = SnapManagedStateStore.fromLocalStorage('veramo-state')
  * const plugin = new DataStoreJson(dataStore)
  * ```
  *
