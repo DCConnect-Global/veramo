@@ -10,7 +10,6 @@ import {
 } from 'ethers'
 import { IRequiredContext } from './ethr-did-provider-snap.js'
 import { IKey } from '@veramo/core-types'
-import { Addressable } from 'ethers'
 
 /**
  * Creates an `ethers` - `signer` implementation by wrapping
@@ -72,7 +71,7 @@ export class KmsEthereumSignerSnap extends AbstractSigner {
     })
   }
 
-  signMessage(message: string | Uint8Array): Promise<string> {
+  signMessage(_message: string | Uint8Array): Promise<string> {
     throw new Error('not_implemented: signMessage() Method not implemented by KmsEthereumSigner.')
   }
 
@@ -80,10 +79,6 @@ export class KmsEthereumSignerSnap extends AbstractSigner {
     if (!provider) {
       throw new Error('provider must not be null')
     }
-    return new KmsEthereumSigner(this.controllerKey, this.context, provider) as unknown as Signer
+    return new KmsEthereumSignerSnap(this.controllerKey, this.context, provider) as unknown as Signer
   }
-}
-
-function isAddressable(address: any): address is Addressable {
-  return (address as Addressable).getAddress !== undefined
 }
