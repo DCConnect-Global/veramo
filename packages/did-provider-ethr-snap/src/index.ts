@@ -5,4 +5,4 @@
  * @packageDocumentation
  */
 export { EthrDIDProviderSnap } from './ethr-did-provider-snap.js'
-export { KmsEthereumSigner } from './kms-eth-signer.js'
+export { KmsEthereumSignerSnap } from './kms-eth-signer-snap.js'
